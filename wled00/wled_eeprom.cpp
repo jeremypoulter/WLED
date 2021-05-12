@@ -93,7 +93,7 @@ void loadSettingsFromEEPROM()
 
   notifyButton = EEPROM.read(230);
   notifyTwice = EEPROM.read(231);
-  buttonEnabled = EEPROM.read(232);
+  buttonType = EEPROM.read(232) ? BTN_TYPE_PUSH : BTN_TYPE_NONE;
 
   staticIP[0] = EEPROM.read(234);
   staticIP[1] = EEPROM.read(235);
@@ -115,7 +115,6 @@ void loadSettingsFromEEPROM()
   }
   receiveNotificationBrightness = EEPROM.read(250);
   fadeTransition = EEPROM.read(251);
-  strip.reverseMode = EEPROM.read(252);
   transitionDelayDefault = EEPROM.read(253) + ((EEPROM.read(254) << 8) & 0xFF00);
   transitionDelay = transitionDelayDefault;
   briMultiplier = EEPROM.read(255);
@@ -144,7 +143,7 @@ void loadSettingsFromEEPROM()
   arlsOffset = EEPROM.read(368);
   if (!EEPROM.read(367)) arlsOffset = -arlsOffset;
   turnOnAtBoot = EEPROM.read(369);
-  useRGBW = EEPROM.read(372);
+  strip.isRgbw = EEPROM.read(372);
   //374 - strip.paletteFade
   
   apBehavior = EEPROM.read(376);
@@ -407,7 +406,7 @@ void deEEP() {
 
         JsonArray colarr = segObj.createNestedArray("col");
 
-        byte numChannels = (useRGBW)? 4:3;
+        byte numChannels = (strip.isRgbw)? 4:3;
 
         for (uint8_t k = 0; k < 3; k++) //k=0 primary (i+2) k=1 secondary (i+6) k=2 tertiary color (i+12)
         {

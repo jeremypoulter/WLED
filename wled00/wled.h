@@ -3,12 +3,12 @@
 /*
    Main sketch, global variable declarations
    @title WLED project sketch
-   @version 0.11.1
+   @version 0.12.1-b1
    @author Christian Schwinne
  */
 
 // version code in format yymmddb (b = daily build)
-#define VERSION 2012311
+#define VERSION 2105112
 
 //uncomment this if you have a "my_config.h" file you'd like to use
 //#define WLED_USE_MY_CONFIG
@@ -16,8 +16,8 @@
 // ESP8266-01 (blue) got too little storage space to work with WLED. 0.10.2 is the last release supporting this unit.
 
 // ESP8266-01 (black) has 1MB flash and can thus fit the whole program, although OTA update is not possible. Use 1M(128K SPIFFS).
-// Uncomment some of the following lines to disable features to compile for ESP8266-01 (max flash size 434kB):
-// Alternatively, with platformio pass your chosen flags to your custom build target in platformio.ini.override
+// Uncomment some of the following lines to disable features:
+// Alternatively, with platformio pass your chosen flags to your custom build target in platformio_override.ini
 
 // You are required to disable over-the-air updates:
 //#define WLED_DISABLE_OTA         // saves 14kb
@@ -26,7 +26,6 @@
 //#define WLED_DISABLE_ALEXA       // saves 11kb
 //#define WLED_DISABLE_BLYNK       // saves 6kb
 //#define WLED_DISABLE_CRONIXIE    // saves 3kb
-//WLED_DISABLE_FX_HIGH_FLASH_USE (need to enable in PIO config or FX.h, saves 18kb)
 //#define WLED_DISABLE_HUESYNC     // saves 4kb
 //#define WLED_DISABLE_INFRARED    // there is no pin left for this on ESP8266-01, saves 12kb
 #ifndef WLED_DISABLE_MQTT
@@ -47,7 +46,11 @@
 // filesystem specific debugging
 //#define WLED_DEBUG_FS
 
-// Library inclusions. 
+//optionally disable brownout detector on ESP32.
+//This is generally a terrible idea, but improves boot success on boards with a 3.3v regulator + cap setup that can't provide 400mA peaks
+//#define WLED_DISABLE_BROWNOUT_DET
+
+// Library inclusions.
 #include <Arduino.h>
 #ifdef ESP8266
   #include <ESP8266WiFi.h>
@@ -65,7 +68,9 @@
   #include <ESPmDNS.h>
   #include <AsyncTCP.h>
   //#include "SPIFFS.h"
-  #define CONFIG_LITTLEFS_FOR_IDF_3_2
+  #ifndef CONFIG_LITTLEFS_FOR_IDF_3_2
+    #define CONFIG_LITTLEFS_FOR_IDF_3_2
+  #endif
   #include <LITTLEFS.h>
 #endif
 
@@ -115,6 +120,9 @@
 #include "FX.h"
 #include "ir_codes.h"
 #include "const.h"
+#include "NodeStruct.h"
+#include "pin_manager.h"
+#include "bus_manager.h"
 
 #ifndef CLIENT_SSID
   #define CLIENT_SSID DEFAULT_CLIENT_SSID
@@ -130,12 +138,6 @@
   Comment out this error message to build regardless.
 #endif
 
-#if IRPIN < 0
-  #ifndef WLED_DISABLE_INFRARED
-    #define WLED_DISABLE_INFRARED
-  #endif
-#endif
-
 #ifndef WLED_DISABLE_INFRARED
   #include <IRremoteESP8266.h>
   #include <IRrecv.h>
@@ -148,11 +150,6 @@
 #else
   #define WLED_FS LITTLEFS
 #endif
-
-// remove flicker because PWM signal of RGB channels can become out of phase (part of core as of Arduino core v2.7.0)
-//#if defined(WLED_USE_ANALOG_LEDS) && defined(ESP8266)
-//  #include "src/dependencies/arduino/core_esp8266_waveform.h"
-//#endif
 
 // GLOBAL VARIABLES
 // both declared and defined in header (solution from http://www.keil.com/support/docs/1868.htm)
@@ -173,9 +170,16 @@
 # define _INIT_N(x) UNPACK x
 #endif
 
+#define STRINGIFY(X) #X
+#define TOSTRING(X) STRINGIFY(X)
+
+#ifndef WLED_VERSION
+  #define WLED_VERSION "dev"
+#endif
+
 // Global Variable definitions
-WLED_GLOBAL char versionString[] _INIT("0.11.1");
-#define WLED_CODENAME "Mirai"
+WLED_GLOBAL char versionString[] _INIT(TOSTRING(WLED_VERSION));
+#define WLED_CODENAME "Hikari"
 
 // AP and OTA default passwords (for maximum security change them!)
 WLED_GLOBAL char apPass[65]  _INIT(DEFAULT_AP_PASS);
@@ -183,13 +187,30 @@ WLED_GLOBAL char otaPass[33] _INIT(DEFAULT_OTA_PASS);
 
 // Hardware CONFIG (only changeble HERE, not at runtime)
 // LED strip pin, button pin and IR pin changeable in NpbWrapper.h!
-
-//WLED_GLOBAL byte presetToApply _INIT(0); 
-
-#if AUXPIN >= 0
-WLED_GLOBAL byte auxDefaultState _INIT(0);                         // 0: input 1: high 2: low
-WLED_GLOBAL byte auxTriggeredState _INIT(0);                       // 0: input 1: high 2: low
+#ifndef BTNPIN
+WLED_GLOBAL int8_t btnPin _INIT(0);
+#else
+WLED_GLOBAL int8_t btnPin _INIT(BTNPIN);
 #endif
+#ifndef RLYPIN
+WLED_GLOBAL int8_t rlyPin _INIT(12);
+#else
+WLED_GLOBAL int8_t rlyPin _INIT(RLYPIN);
+#endif
+//Relay mode (1 = active high, 0 = active low, flipped in cfg.json)
+#ifndef RLYMDE
+WLED_GLOBAL bool rlyMde _INIT(true);
+#else
+WLED_GLOBAL bool rlyMde _INIT(RLYMDE);
+#endif
+#ifndef IRPIN
+WLED_GLOBAL int8_t irPin _INIT(4);
+#else
+WLED_GLOBAL int8_t irPin _INIT(IRPIN);
+#endif
+
+//WLED_GLOBAL byte presetToApply _INIT(0);
+
 WLED_GLOBAL char ntpServerName[33] _INIT("0.wled.pool.ntp.org");   // NTP server to use
 
 // WiFi CONFIG (all these can be changed via web UI, no need to set them here)
@@ -204,12 +225,18 @@ WLED_GLOBAL IPAddress staticIP      _INIT_N(((  0,   0,  0,  0))); // static IP 
 WLED_GLOBAL IPAddress staticGateway _INIT_N(((  0,   0,  0,  0))); // gateway (router) IP
 WLED_GLOBAL IPAddress staticSubnet  _INIT_N(((255, 255, 255, 0))); // most common subnet in home networks
 WLED_GLOBAL bool noWifiSleep _INIT(false);                         // disabling modem sleep modes will increase heat output and power usage, but may help with connection issues
+#ifdef WLED_USE_ETHERNET
+  #ifdef WLED_ETH_DEFAULT                                          // default ethernet board type if specified
+    WLED_GLOBAL int ethernetType _INIT(WLED_ETH_DEFAULT);          // ethernet board type
+  #else
+    WLED_GLOBAL int ethernetType _INIT(WLED_ETH_NONE);             // use none for ethernet board type if default not defined
+  #endif
+#endif
 
 // LED CONFIG
-WLED_GLOBAL uint16_t ledCount _INIT(30);          // overcurrent prevented by ABL
-WLED_GLOBAL bool useRGBW      _INIT(false);       // SK6812 strips can contain an extra White channel
-WLED_GLOBAL bool turnOnAtBoot _INIT(true);        // turn on LEDs at power-up
-WLED_GLOBAL byte bootPreset   _INIT(0);           // save preset to load after power-up
+WLED_GLOBAL uint16_t ledCount _INIT(DEFAULT_LED_COUNT);   // overcurrent prevented by ABL
+WLED_GLOBAL bool turnOnAtBoot _INIT(true);                // turn on LEDs at power-up
+WLED_GLOBAL byte bootPreset   _INIT(0);                   // save preset to load after power-up
 
 WLED_GLOBAL byte col[]    _INIT_N(({ 255, 160, 0, 0 }));  // current RGB(W) primary color. col[] should be updated if you want to change the color.
 WLED_GLOBAL byte colSec[] _INIT_N(({ 0, 0, 0, 0 }));      // current RGB(W) secondary color
@@ -229,7 +256,11 @@ WLED_GLOBAL char serverDescription[33] _INIT("WLED");  // Name of module
 WLED_GLOBAL bool syncToggleReceive     _INIT(false);   // UIs which only have a single button for sync should toggle send+receive if this is true, only send otherwise
 
 // Sync CONFIG
-WLED_GLOBAL bool buttonEnabled  _INIT(true);
+WLED_GLOBAL NodesMap Nodes;
+WLED_GLOBAL bool nodeListEnabled _INIT(true);
+WLED_GLOBAL bool nodeBroadcastEnabled _INIT(true);
+
+WLED_GLOBAL byte buttonType     _INIT(BTN_TYPE_PUSH);
 WLED_GLOBAL byte irEnabled      _INIT(0);     // Infrared receiver
 
 WLED_GLOBAL uint16_t udpPort    _INIT(21324); // WLED notifier default port
@@ -285,7 +316,7 @@ WLED_GLOBAL bool huePollingEnabled _INIT(false);           // poll hue bridge fo
 WLED_GLOBAL uint16_t huePollIntervalMs _INIT(2500);        // low values (< 1sec) may cause lag but offer quicker response
 WLED_GLOBAL char hueApiKey[47] _INIT("api");               // key token will be obtained from bridge
 WLED_GLOBAL byte huePollLightId _INIT(1);                  // ID of hue lamp to sync to. Find the ID in the hue app ("about" section)
-WLED_GLOBAL IPAddress hueIP _INIT((0, 0, 0, 0));           // IP address of the bridge
+WLED_GLOBAL IPAddress hueIP _INIT_N(((0, 0, 0, 0))); // IP address of the bridge
 WLED_GLOBAL bool hueApplyOnOff _INIT(true);
 WLED_GLOBAL bool hueApplyBri _INIT(true);
 WLED_GLOBAL bool hueApplyColor _INIT(true);
@@ -342,11 +373,7 @@ WLED_GLOBAL bool interfacesInited _INIT(false);
 WLED_GLOBAL bool wasConnected _INIT(false);
 
 // color
-WLED_GLOBAL byte colOld[]    _INIT_N(({ 0, 0, 0, 0 }));        // color before transition
-WLED_GLOBAL byte colT[]      _INIT_N(({ 0, 0, 0, 0 }));          // color that is currently displayed on the LEDs
 WLED_GLOBAL byte colIT[]     _INIT_N(({ 0, 0, 0, 0 }));         // color that was last sent to LEDs
-WLED_GLOBAL byte colSecT[]   _INIT_N(({ 0, 0, 0, 0 }));
-WLED_GLOBAL byte colSecOld[] _INIT_N(({ 0, 0, 0, 0 }));
 WLED_GLOBAL byte colSecIT[]  _INIT_N(({ 0, 0, 0, 0 }));
 
 WLED_GLOBAL byte lastRandomIndex _INIT(0);        // used to save last random color so the new one is not the same
@@ -396,6 +423,7 @@ WLED_GLOBAL byte effectCurrent _INIT(0);
 WLED_GLOBAL byte effectSpeed _INIT(128);
 WLED_GLOBAL byte effectIntensity _INIT(128);
 WLED_GLOBAL byte effectPalette _INIT(0);
+WLED_GLOBAL bool effectChanged _INIT(false);
 
 // network
 WLED_GLOBAL bool udpConnected _INIT(false), udp2Connected _INIT(false), udpRgbConnected _INIT(false);
@@ -430,10 +458,10 @@ WLED_GLOBAL bool countdownOverTriggered _INIT(true);
 
 // timer
 WLED_GLOBAL byte lastTimerMinute _INIT(0);
-WLED_GLOBAL byte timerHours[] _INIT_N(({ 0, 0, 0, 0, 0, 0, 0, 0 }));
-WLED_GLOBAL byte timerMinutes[] _INIT_N(({ 0, 0, 0, 0, 0, 0, 0, 0 }));
-WLED_GLOBAL byte timerMacro[] _INIT_N(({ 0, 0, 0, 0, 0, 0, 0, 0 }));
-WLED_GLOBAL byte timerWeekday[] _INIT_N(({ 255, 255, 255, 255, 255, 255, 255, 255 }));        // weekdays to activate on
+WLED_GLOBAL byte timerHours[] _INIT_N(({ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }));
+WLED_GLOBAL int8_t timerMinutes[] _INIT_N(({ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }));
+WLED_GLOBAL byte timerMacro[] _INIT_N(({ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }));
+WLED_GLOBAL byte timerWeekday[] _INIT_N(({ 255, 255, 255, 255, 255, 255, 255, 255, 255, 255 }));        // weekdays to activate on
 // bit pattern of arr elem: 0b11111111: sun,sat,fri,thu,wed,tue,mon,validity
 
 // blynk
@@ -452,23 +480,16 @@ WLED_GLOBAL int16_t currentPlaylist _INIT(0);
 // realtime
 WLED_GLOBAL byte realtimeMode _INIT(REALTIME_MODE_INACTIVE);
 WLED_GLOBAL byte realtimeOverride _INIT(REALTIME_OVERRIDE_NONE);
-WLED_GLOBAL IPAddress realtimeIP _INIT((0, 0, 0, 0));
+WLED_GLOBAL IPAddress realtimeIP _INIT_N(((0, 0, 0, 0)));;
 WLED_GLOBAL unsigned long realtimeTimeout _INIT(0);
 WLED_GLOBAL uint8_t tpmPacketCount _INIT(0);
 WLED_GLOBAL uint16_t tpmPayloadFrameSize _INIT(0);
 
 // mqtt
-WLED_GLOBAL long lastMqttReconnectAttempt _INIT(0);
-WLED_GLOBAL long lastInterfaceUpdate _INIT(0);
+WLED_GLOBAL unsigned long lastMqttReconnectAttempt _INIT(0);
+WLED_GLOBAL unsigned long lastInterfaceUpdate _INIT(0);
 WLED_GLOBAL byte interfaceUpdateCallMode _INIT(NOTIFIER_CALL_MODE_INIT);
 WLED_GLOBAL char mqttStatusTopic[40] _INIT("");        // this must be global because of async handlers
-
-#if AUXPIN >= 0
-  // auxiliary debug pin
-  WLED_GLOBAL byte auxTime _INIT(0);
-  WLED_GLOBAL unsigned long auxStartTime _INIT(0);
-  WLED_GLOBAL bool auxActive _INIT(false, auxActiveBefore _INIT(false);
-#endif
 
 // alexa udp
 WLED_GLOBAL String escapedMac;
@@ -488,6 +509,10 @@ WLED_GLOBAL unsigned long ntpPacketSentTime _INIT(999000000L);
 WLED_GLOBAL IPAddress ntpServerIP;
 WLED_GLOBAL uint16_t ntpLocalPort _INIT(2390);
 WLED_GLOBAL uint16_t rolloverMillis _INIT(0);
+WLED_GLOBAL float longitude _INIT(0.0);
+WLED_GLOBAL float latitude _INIT(0.0);
+WLED_GLOBAL time_t sunrise _INIT(0);
+WLED_GLOBAL time_t sunset _INIT(0);
 
 // Temp buffer
 WLED_GLOBAL char* obuf;
@@ -501,7 +526,6 @@ WLED_GLOBAL JsonDocument* fileDoc;
 WLED_GLOBAL bool doCloseFile _INIT(false);
 
 // presets
-WLED_GLOBAL uint16_t savedPresets _INIT(0);
 WLED_GLOBAL int16_t currentPreset _INIT(-1);
 WLED_GLOBAL bool isPreset _INIT(false);
 
@@ -528,15 +552,16 @@ WLED_GLOBAL ESPAsyncE131 e131 _INIT_N(((handleE131Packet)));
 WLED_GLOBAL bool e131NewData _INIT(false);
 
 // led fx library object
+WLED_GLOBAL BusManager busses _INIT(BusManager());
 WLED_GLOBAL WS2812FX strip _INIT(WS2812FX());
+WLED_GLOBAL BusConfig* busConfigs[WLED_MAX_BUSSES] _INIT({nullptr}); //temporary, to remember values from network callback until after
+WLED_GLOBAL bool doInitBusses _INIT(false);
 
 // Usermod manager
 WLED_GLOBAL UsermodManager usermods _INIT(UsermodManager());
 
-WLED_GLOBAL PinManagerClass pinManager _INIT(PinManagerClass());
-
 // Status LED
-#if STATUSLED && STATUSLED != LEDPIN
+#if STATUSLED
   WLED_GLOBAL unsigned long ledStatusLastMillis _INIT(0);
   WLED_GLOBAL unsigned short ledStatusType _INIT(0); // current status type - corresponds to number of blinks per second
   WLED_GLOBAL bool ledStatusState _INIT(0); // the current LED state
@@ -553,7 +578,7 @@ WLED_GLOBAL PinManagerClass pinManager _INIT(PinManagerClass());
 #else
   #define DEBUG_PRINT(x)
   #define DEBUG_PRINTLN(x)
-  #define DEBUG_PRINTF(x)
+  #define DEBUG_PRINTF(x...)
 #endif
 
 #ifdef WLED_DEBUG_FS

@@ -30,6 +30,7 @@ void toggleOnOff()
   {
     briLast = bri;
     bri = 0;
+    unloadPlaylist();
   }
 }
 
@@ -49,26 +50,22 @@ void setAllLeds() {
   {
     strip.setBrightness(scaledBri(briT));
   }
-  if (useRGBW && strip.rgbwMode == RGBW_MODE_LEGACY)
+  if (strip.isRgbw && strip.rgbwMode == RGBW_MODE_LEGACY)
   {
-    colorRGBtoRGBW(colT);
-    colorRGBtoRGBW(colSecT);
+    colorRGBtoRGBW(col);
+    colorRGBtoRGBW(colSec);
   }
-  strip.setColor(0, colT[0], colT[1], colT[2], colT[3]);
-  strip.setColor(1, colSecT[0], colSecT[1], colSecT[2], colSecT[3]);
+  strip.setColor(0, col[0], col[1], col[2], col[3]);
+  strip.setColor(1, colSec[0], colSec[1], colSec[2], colSec[3]);
+  if (strip.isRgbw && strip.rgbwMode == RGBW_MODE_LEGACY)
+  {
+    col[3] = 0; colSec[3] = 0;
+  }
 }
 
 
-void setLedsStandard(bool justColors)
+void setLedsStandard()
 {
-  for (byte i=0; i<4; i++)
-  {
-    colOld[i] = col[i];
-    colT[i] = col[i];
-    colSecOld[i] = colSec[i];
-    colSecT[i] = colSec[i];
-  }
-  if (justColors) return;
   briOld = bri;
   briT = bri;
   setAllLeds();
@@ -104,7 +101,7 @@ void colorUpdated(int callMode)
   //Notifier: apply received FX to selected segments only if actually receiving FX
   if (someSel) strip.applyToAllSelected = receiveNotificationEffects;
 
-  bool fxChanged = strip.setEffectConfig(effectCurrent, effectSpeed, effectIntensity, effectPalette);
+  bool fxChanged = strip.setEffectConfig(effectCurrent, effectSpeed, effectIntensity, effectPalette) || effectChanged;
   bool colChanged = colorChanged();
 
   //Notifier: apply received color to selected segments only if actually receiving color
@@ -112,6 +109,7 @@ void colorUpdated(int callMode)
 
   if (fxChanged || colChanged)
   {
+    effectChanged = false;
     if (realtimeTimeout == UINT32_MAX) realtimeTimeout = 0;
     if (isPreset) {isPreset = false;}
         else {currentPreset = -1;}
@@ -145,7 +143,7 @@ void colorUpdated(int callMode)
   }
   if (briT == 0)
   {
-    setLedsStandard(true);                                            //do not color transition if starting from off
+    //setLedsStandard(true); //do not color transition if starting from off!
     if (callMode != NOTIFIER_CALL_MODE_NOTIFICATION) resetTimebase(); //effect start from beginning
   }
 
@@ -160,15 +158,11 @@ void colorUpdated(int callMode)
     //set correct delay if not using notification delay
     if (callMode != NOTIFIER_CALL_MODE_NOTIFICATION && !jsonTransitionOnce) transitionDelayTemp = transitionDelay;
     jsonTransitionOnce = false;
+    strip.setTransition(transitionDelayTemp);
     if (transitionDelayTemp == 0) {setLedsStandard(); strip.trigger(); return;}
     
     if (transitionActive)
     {
-      for (byte i=0; i<4; i++)
-      {
-        colOld[i] = colT[i];
-        colSecOld[i] = colSecT[i];
-      }
       briOld = briT;
       tperLast = 0;
     }
@@ -177,6 +171,7 @@ void colorUpdated(int callMode)
     transitionStartTime = millis();
   } else
   {
+    strip.setTransition(0);
     setLedsStandard();
     strip.trigger();
   }
@@ -222,11 +217,6 @@ void handleTransitions()
     }
     if (tper - tperLast < 0.004) return;
     tperLast = tper;
-    for (byte i=0; i<4; i++)
-    {
-      colT[i] = colOld[i]+((col[i] - colOld[i])*tper);
-      colSecT[i] = colSecOld[i]+((colSec[i] - colSecOld[i])*tper);
-    }
     briT    = briOld   +((bri    - briOld   )*tper);
     
     setAllLeds();
