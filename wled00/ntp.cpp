@@ -5,6 +5,9 @@
 /*
  * Acquires time from NTP server
  */
+//#define WLED_DEBUG_NTP
+#define NTP_SYNC_INTERVAL 42000UL //Get fresh NTP time about twice per day
+
 Timezone* tz;
 
 #define TZ_UTC                  0
@@ -26,6 +29,9 @@ Timezone* tz;
 #define TZ_AUSTRALIA_NORTHERN  16
 #define TZ_AUSTRALIA_SOUTHERN  17
 #define TZ_HAWAII              18
+#define TZ_NOVOSIBIRSK         19
+#define TZ_ANCHORAGE           20
+#define TZ_MX_CENTRAL          21  
 #define TZ_INIT               255
 
 byte tzCurrent = TZ_INIT; //uninitialized
@@ -126,6 +132,21 @@ void updateTimezone() {
       tcrStandard = tcrDaylight;
       break;
     }
+    case TZ_NOVOSIBIRSK : {
+      tcrDaylight = {Last, Sun, Mar, 1, 420};     //CST = UTC + 7 hours
+      tcrStandard = tcrDaylight;
+      break;
+    }
+    case TZ_ANCHORAGE : {
+      tcrDaylight = {Second, Sun, Mar, 2, -480};  //AKDT = UTC - 8 hours
+      tcrStandard = {First, Sun, Nov, 2, -540};   //AKST = UTC - 9 hours
+      break;
+    }
+     case TZ_MX_CENTRAL : {
+      tcrDaylight = {First, Sun, Apr, 2, -300};  //CDT = UTC - 5 hours
+      tcrStandard = {Last,  Sun, Oct, 2, -360};  //CST = UTC - 6 hours
+      break;
+    }
   }
 
   tzCurrent = currentTimezone;
@@ -133,9 +154,28 @@ void updateTimezone() {
   tz = new Timezone(tcrDaylight, tcrStandard);
 }
 
+void handleTime() {
+  handleNetworkTime();
+  
+  toki.millisecond();
+  toki.setTick();
+
+  if (toki.isTick()) //true only in the first loop after a new second started
+  {
+    #ifdef WLED_DEBUG_NTP
+    Serial.print(F("TICK! "));
+    toki.printTime(toki.getTime());
+    #endif
+    updateLocalTime();
+    checkTimers();
+    checkCountdown();
+    handleOverlays();
+  }
+}
+
 void handleNetworkTime()
 {
-  if (ntpEnabled && ntpConnected && millis() - ntpLastSyncTime > 50000000L && WLED_CONNECTED)
+  if (ntpEnabled && ntpConnected && millis() - ntpLastSyncTime > (1000*NTP_SYNC_INTERVAL) && WLED_CONNECTED)
   {
     if (millis() - ntpPacketSentTime > 10000)
     {
@@ -182,35 +222,52 @@ void sendNTPPacket()
 bool checkNTPResponse()
 {
   int cb = ntpUdp.parsePacket();
-  if (cb) {
-    DEBUG_PRINT(F("NTP recv, l="));
-    DEBUG_PRINTLN(cb);
-    byte pbuf[NTP_PACKET_SIZE];
-    ntpUdp.read(pbuf, NTP_PACKET_SIZE); // read the packet into the buffer
+  if (!cb) return false;
 
-    unsigned long highWord = word(pbuf[40], pbuf[41]);
-    unsigned long lowWord = word(pbuf[42], pbuf[43]);
-    if (highWord == 0 && lowWord == 0) return false;
-    
-    unsigned long secsSince1900 = highWord << 16 | lowWord;
- 
-    DEBUG_PRINT(F("Unix time = "));
-    unsigned long epoch = secsSince1900 - 2208988799UL; //subtract 70 years -1sec (on avg. more precision)
-    setTime(epoch);
-    DEBUG_PRINTLN(epoch);
-    if (countdownTime - now() > 0) countdownOverTriggered = false;
-    // if time changed re-calculate sunrise/sunset
-    updateLocalTime();
-    calculateSunriseAndSunset();
-    return true;
-  }
-  return false;
+  uint32_t ntpPacketReceivedTime = millis();
+  DEBUG_PRINT(F("NTP recv, l="));
+  DEBUG_PRINTLN(cb);
+  byte pbuf[NTP_PACKET_SIZE];
+  ntpUdp.read(pbuf, NTP_PACKET_SIZE); // read the packet into the buffer
+
+  Toki::Time arrived  = toki.fromNTP(pbuf + 32);
+  Toki::Time departed = toki.fromNTP(pbuf + 40);
+  if (departed.sec == 0) return false;
+  //basic half roundtrip estimation
+  uint32_t serverDelay = toki.msDifference(arrived, departed);
+  uint32_t offset = (ntpPacketReceivedTime - ntpPacketSentTime - serverDelay) >> 1;
+  #ifdef WLED_DEBUG_NTP
+  //the time the packet departed the NTP server
+  toki.printTime(departed);
+  #endif
+
+  toki.adjust(departed, offset);
+  toki.setTime(departed, TOKI_TS_NTP);
+
+  #ifdef WLED_DEBUG_NTP
+  Serial.print("Arrived: ");
+  toki.printTime(arrived);
+  Serial.print("Time: ");
+  toki.printTime(departed);
+  Serial.print("Roundtrip: ");
+  Serial.println(ntpPacketReceivedTime - ntpPacketSentTime);
+  Serial.print("Offset: ");
+  Serial.println(offset);
+  Serial.print("Serverdelay: ");
+  Serial.println(serverDelay);
+  #endif
+
+  if (countdownTime - toki.second() > 0) countdownOverTriggered = false;
+  // if time changed re-calculate sunrise/sunset
+  updateLocalTime();
+  calculateSunriseAndSunset();
+  return true;
 }
 
 void updateLocalTime()
 {
   if (currentTimezone != tzCurrent) updateTimezone();
-  unsigned long tmc = now()+ utcOffsetSecs;
+  unsigned long tmc = toki.second()+ utcOffsetSecs;
   localTime = tz->toLocal(tmc);
 }
 
@@ -234,13 +291,13 @@ void setCountdown()
 {
   if (currentTimezone != tzCurrent) updateTimezone();
   countdownTime = tz->toUTC(getUnixTime(countdownHour, countdownMin, countdownSec, countdownDay, countdownMonth, countdownYear));
-  if (countdownTime - now() > 0) countdownOverTriggered = false;
+  if (countdownTime - toki.second() > 0) countdownOverTriggered = false;
 }
 
 //returns true if countdown just over
 bool checkCountdown()
 {
-  unsigned long n = now();
+  unsigned long n = toki.second();
   if (countdownMode) localTime = countdownTime - n + utcOffsetSecs;
   if (n > countdownTime) {
     if (countdownMode) localTime = n - countdownTime + utcOffsetSecs;
@@ -381,7 +438,7 @@ void calculateSunriseAndSunset() {
       // there is a sunrise
       tim_0.tm_hour = minUTC / 60;
       tim_0.tm_min = minUTC % 60;
-      sunrise = tz->toLocal(mktime(&tim_0) - utcOffsetSecs);
+      sunrise = tz->toLocal(mktime(&tim_0) + utcOffsetSecs);
       DEBUG_PRINTF("Sunrise: %02d:%02d\n", hour(sunrise), minute(sunrise));
     } else {
       sunrise = 0;
@@ -392,10 +449,26 @@ void calculateSunriseAndSunset() {
       // there is a sunset
       tim_0.tm_hour = minUTC / 60;
       tim_0.tm_min = minUTC % 60;
-      sunset = tz->toLocal(mktime(&tim_0) - utcOffsetSecs);
+      sunset = tz->toLocal(mktime(&tim_0) + utcOffsetSecs);
       DEBUG_PRINTF("Sunset: %02d:%02d\n", hour(sunset), minute(sunset));
     } else {
       sunset = 0;
     }
   }
+}
+
+//time from JSON and HTTP API
+void setTimeFromAPI(uint32_t timein) {
+  if (timein == 0 || timein == UINT32_MAX) return;
+  uint32_t prev = toki.second();
+  //only apply if more accurate or there is a significant difference to the "more accurate" time source
+  uint32_t diff = (timein > prev) ? timein - prev : prev - timein;
+  if (toki.getTimeSource() > TOKI_TS_JSON && diff < 60U) return;
+
+  toki.setTime(timein, TOKI_NO_MS_ACCURACY, TOKI_TS_JSON);
+  if (diff >= 60U) {
+    updateLocalTime();
+    calculateSunriseAndSunset();
+  }
+  if (presetsModifiedTime == 0) presetsModifiedTime = timein;
 }
