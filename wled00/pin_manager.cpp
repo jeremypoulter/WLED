@@ -378,6 +378,7 @@ const char* PinManager::getPinOwnerName(uint8_t gpio) {
     case PinOwner::HW_SPI:        return "SPI";
     case PinOwner::DMX_INPUT:     return "DMX Input";
     case PinOwner::HUB75:         return "HUB75";
+    case PinOwner::LedTile:       return "LED Tile v2";
     // Usermods - return generic name for now
     // TODO: Get actual usermod name from UsermodManager
     default:

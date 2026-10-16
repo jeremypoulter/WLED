@@ -3581,6 +3581,7 @@ function busTypeToString(t) {
 	if (t >= 41 && t <= 47)            return "pwm";          // analog RGB/CCT/single
 	if (t >= 48 && t <= 63)            return "digital-spi";  // APA102, WS2801, etc.
 	if (t >= 64 && t <= 71)            return "hub75";        // HUB75 matrix panels
+	if (t === 72)                     return "ledtile";      // LED Tile v2
 	if (t >= 80 && t <= 95)            return "network";      // DDP, E1.31, ArtNet
 	return "unknown";
 }
